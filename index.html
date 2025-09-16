@@ -1,1 +1,167 @@
-hi
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Client-side Video Upscaler — Single File</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--accent:#fb923c;--muted:#9ca3af}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial}
+    body{background:linear-gradient(180deg,#071025 0%, #071a2a 100%);color:#e6eef8;display:flex;align-items:center;justify-content:center;padding:28px}
+    .card{width:100%;max-width:920px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));border-radius:12px;padding:20px;box-shadow:0 6px 30px rgba(2,6,23,0.6)}
+    h1{margin:0 0 6px;font-size:20px}
+    p{margin:6px 0 16px;color:var(--muted)}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    input[type=file]{background:transparent;color:inherit}
+    select, button{padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    button{cursor:pointer}
+    .controls{display:flex;gap:8px;align-items:center}
+    .preview{margin-top:14px;display:grid;grid-template-columns:1fr 320px;gap:12px}
+    video, canvas{width:100%;border-radius:8px;background:#000}
+    .side{padding:10px}
+    .log{font-family:monospace;font-size:12px;color:var(--muted);white-space:pre-wrap;max-height:220px;overflow:auto;background:rgba(255,255,255,0.01);padding:10px;border-radius:8px}
+    footer{margin-top:14px;font-size:13px;color:var(--muted)}
+    @media(max-width:880px){.preview{grid-template-columns:1fr;}.side{order:2}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Client-side Video Upscaler (Single HTML/CSS/JS)</h1>
+    <p>Upload a video and upscale it in the browser. No backend required. This upscaler enlarges frames and re-records — it's a pixel upscale (not AI-enhanced).</p>
+
+    <div class="row controls">
+      <input id="file" type="file" accept="video/*" />
+
+      <label>
+        Output scale:
+        <select id="scale">
+          <option value="1.5">1.5×</option>
+          <option value="2" selected>2×</option>
+          <option value="3">3×</option>
+        </select>
+      </label>
+
+      <label>
+        Framerate (max):
+        <select id="fps">
+          <option value="24">24</option>
+          <option value="30" selected>30</option>
+          <option value="60">60</option>
+        </select>
+      </label>
+
+      <button id="start">Start Upscale</button>
+      <button id="download" disabled>Download Result</button>
+    </div>
+
+    <div class="preview">
+      <div>
+        <video id="source" controls crossorigin="anonymous" style="display:block" playsinline></video>
+        <canvas id="canvas" style="display:none"></canvas>
+      </div>
+
+      <div class="side">
+        <div class="log" id="log">No file selected.</div>
+      </div>
+    </div>
+
+    <footer>
+      Note: This performs client-side upscaling by drawing the original video frames onto a larger canvas and recording the canvas. It produces a WebM (VP8/VP9) file. This is NOT deep-learning based enhancement — for AI upscaling you will need a server or an external API.
+    </footer>
+  </div>
+
+<script>
+const fileIn = document.getElementById('file');
+const srcVideo = document.getElementById('source');
+const canvas = document.getElementById('canvas');
+const startBtn = document.getElementById('start');
+const downloadBtn = document.getElementById('download');
+const logEl = document.getElementById('log');
+const scaleSel = document.getElementById('scale');
+const fpsSel = document.getElementById('fps');
+let recordedBlob = null;
+
+function log(s){ logEl.textContent += '\n' + s; logEl.scrollTop = logEl.scrollHeight; }
+
+fileIn.addEventListener('change', async (e) => {
+  recordedBlob = null; downloadBtn.disabled = true;
+  const f = e.target.files[0];
+  if(!f) return; 
+  const url = URL.createObjectURL(f);
+  srcVideo.src = url;
+  srcVideo.load();
+  logEl.textContent = 'Loaded: ' + f.name + ' (' + Math.round(f.size/1024) + ' KB)';
+});
+
+startBtn.addEventListener('click', async ()=>{
+  if(!srcVideo.src){ alert('Please choose a video file first.'); return; }
+  startBtn.disabled = true; log('Preparing...');
+
+  const scale = parseFloat(scaleSel.value);
+  const outFps = parseInt(fpsSel.value,10);
+
+  await srcVideo.play().catch(()=>{});
+  // Wait for metadata
+  await new Promise(r => { if(srcVideo.readyState>=2) r(); else srcVideo.onloadedmetadata = r; });
+
+  const w = srcVideo.videoWidth;
+  const h = srcVideo.videoHeight;
+  const outW = Math.round(w * scale);
+  const outH = Math.round(h * scale);
+
+  canvas.width = outW; canvas.height = outH; canvas.style.display = 'block';
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true; // smooth upscale
+  ctx.imageSmoothingQuality = 'high';
+
+  // Create MediaRecorder from canvas stream
+  const stream = canvas.captureStream(outFps);
+  const recordedChunks = [];
+  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+  const mr = new MediaRecorder(stream, { mimeType: mime });
+  mr.ondataavailable = (ev)=>{ if(ev.data && ev.data.size) recordedChunks.push(ev.data); };
+  mr.onstop = ()=>{
+    recordedBlob = new Blob(recordedChunks, { type: mime });
+    downloadBtn.disabled = false; 
+    log('Recording finished. Result size: ' + Math.round(recordedBlob.size/1024) + ' KB');
+    startBtn.disabled = false;
+  };
+
+  mr.start();
+  log('Recording started — scaling to ' + outW + 'x' + outH + ' @' + outFps + 'fps.');
+
+  // Draw loop: sync to video frames
+  const drawFrame = ()=>{
+    if(srcVideo.paused || srcVideo.ended){
+      // stop when source ends
+      mr.state !== 'inactive' && mr.stop();
+      srcVideo.pause();
+      return;
+    }
+    // draw scaled
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // fill black background to avoid transparency artifacts
+    ctx.fillStyle = 'black'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(srcVideo, 0, 0, canvas.width, canvas.height);
+    // request next frame aiming for the chosen fps
+    setTimeout(()=> requestAnimationFrame(drawFrame), 1000/outFps);
+  };
+
+  // play from start
+  srcVideo.currentTime = 0;
+  srcVideo.play().then(()=> drawFrame()).catch(err=>{ log('Playback error: '+err); mr.stop(); startBtn.disabled=false; });
+});
+
+downloadBtn.addEventListener('click', ()=>{
+  if(!recordedBlob) return; 
+  const url = URL.createObjectURL(recordedBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'upscaled.webm';
+  document.body.appendChild(a); a.click(); a.remove();
+  log('Download started.');
+});
+</script>
+</body>
+</html>
+
